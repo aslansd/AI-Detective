@@ -1,0 +1,6 @@
+{
+  "name": "AI Detective",
+  "description": "An immersive AI-powered mystery investigation game where every suspect is an autonomous agent constrained by private knowledge, secrets, and motives. Gather clues, interrogate townspeople, and solve procedural or handcrafted cases.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
