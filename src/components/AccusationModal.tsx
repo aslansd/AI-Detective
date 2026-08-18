@@ -43,6 +43,7 @@ export const AccusationModal: React.FC<AccusationModalProps> = ({
   const [reasoning, setReasoning] = useState<string>('');
   const [evaluating, setEvaluating] = useState(false);
   const [verdict, setVerdict] = useState<VerdictResult | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -59,6 +60,7 @@ export const AccusationModal: React.FC<AccusationModalProps> = ({
     if (!selectedSuspectId) return;
 
     setEvaluating(true);
+    setSubmitError(null);
     playDramaticSting();
 
     const submission: AccusationSubmission = {
@@ -70,7 +72,7 @@ export const AccusationModal: React.FC<AccusationModalProps> = ({
     };
 
     try {
-      const result = await evaluateAccusation(caseData, submission);
+      const result = await evaluateAccusation(caseData.id, submission);
       setVerdict(result);
       playGavel();
 
@@ -81,38 +83,28 @@ export const AccusationModal: React.FC<AccusationModalProps> = ({
           origin: { y: 0.6 },
         });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Evaluation error:', err);
-      // Fallback verdict
-      const isCulprit = selectedSuspectId === caseData.solution.culpritId;
-      setVerdict({
-        isCorrectCulprit: isCulprit,
-        isCorrectWeapon: true,
-        isCorrectMotive: true,
-        deductionScore: isCulprit ? 85 : 35,
-        rankTitle: isCulprit ? 'Senior Detective' : 'Wrongful Accuser',
-        summaryFeedback: isCulprit
-          ? 'You correctly brought the true culprit to justice!'
-          : 'Wrongful accusation! The real killer remains free.',
-        detailedCritique: {
-          culpritDeduction: isCulprit ? 'Correct perpetrator.' : 'Incorrect person accused.',
-          weaponMethodAnalysis: 'Your method assessment was reviewed against the coroner logs.',
-          motiveAnalysis: 'Motive evaluated against suspect background.',
-          evidenceEvaluation: 'Evidence evaluated.',
-          reasoningPraise: 'Solid deductive effort.',
-          overlookedClues: caseData.solution.keyCluesNeeded,
-        },
-        confessionNarrative: caseData.solution.confessionText,
-        fullCaseResolution: caseData.solution.timelineOfCrime,
-      });
-      playGavel();
+      // The verdict is decided server-side, so a failure here means the case file
+      // could not be reached. Surface that instead of inventing a result.
+      setSubmitError(
+        err?.message ||
+          'The prosecutor\u2019s office could not be reached. Check your connection and try again.'
+      );
     } finally {
       setEvaluating(false);
     }
   };
 
+  /** Closing must reset the form, or reopening shows the previous verdict. */
+  const handleClose = () => {
+    handleReset();
+    onClose();
+  };
+
   const handleReset = () => {
     setVerdict(null);
+    setSubmitError(null);
     setSelectedSuspectId('');
     setMurderWeapon('');
     setMotive('');
@@ -124,8 +116,8 @@ export const AccusationModal: React.FC<AccusationModalProps> = ({
     <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 z-50 overflow-y-auto">
       <div className="bg-[#18181b] border border-white/10 rounded-2xl max-w-3xl w-full p-6 sm:p-8 shadow-2xl space-y-6 relative my-8">
         <button
-          onClick={onClose}
-          className="absolute top-4 right-4 p-1.5 rounded-xl bg-zinc-800 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-750 transition"
+          onClick={handleClose}
+          className="absolute top-4 right-4 p-1.5 rounded-xl bg-zinc-800 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 transition"
         >
           <X className="w-5 h-5" />
         </button>
@@ -283,6 +275,11 @@ export const AccusationModal: React.FC<AccusationModalProps> = ({
                 Return to Investigation
               </button>
 
+              {submitError && (
+                <div className="mb-3 p-3 rounded-xl bg-red-950/80 border border-red-800 text-red-300 text-xs">
+                  {submitError}
+                </div>
+              )}
               <button
                 type="button"
                 id="btn-submit-final-accusation"
@@ -390,10 +387,10 @@ export const AccusationModal: React.FC<AccusationModalProps> = ({
             <div className="bg-[#121215] border border-[#c4a17a]/30 rounded-2xl p-5 sm:p-6 space-y-2 shadow-lg">
               <div className="text-xs font-bold uppercase tracking-wider text-[#c4a17a] flex items-center gap-2">
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>The Culprit's Confession ({caseData.solution.culpritName})</span>
+                <span>The Culprit's Confession ({verdict.culpritName})</span>
               </div>
               <p className="text-xs sm:text-sm text-zinc-200 italic font-serif leading-relaxed">
-                "{verdict.confessionNarrative || caseData.solution.confessionText}"
+                "{verdict.confessionNarrative}"
               </p>
             </div>
 
@@ -403,7 +400,7 @@ export const AccusationModal: React.FC<AccusationModalProps> = ({
                 The True Sequence of Events (Case Solution)
               </div>
               <p className="text-zinc-300 leading-relaxed">
-                {verdict.fullCaseResolution || caseData.solution.timelineOfCrime}
+                {verdict.fullCaseResolution}
               </p>
             </div>
 
@@ -422,7 +419,7 @@ export const AccusationModal: React.FC<AccusationModalProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    onClose();
+                    handleClose();
                     onOpenGenerateNew();
                   }}
                   className="px-4 py-2 rounded-xl bg-[#18181b] hover:bg-zinc-800 text-[#c4a17a] border border-[#c4a17a]/40 text-xs font-bold flex items-center gap-1.5 shadow"
@@ -434,12 +431,26 @@ export const AccusationModal: React.FC<AccusationModalProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    onClose();
-                    onRestartCase();
+                    if (
+                      window.confirm(
+                        'Reopen this case from scratch? All discovered clues, interrogations, corkboard links and journal notes for this case will be erased.'
+                      )
+                    ) {
+                      handleClose();
+                      onRestartCase();
+                    }
                   }}
+                  className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold border border-white/5"
+                >
+                  Reopen Case from Scratch
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleClose}
                   className="px-5 py-2 rounded-xl bg-[#c4a17a] hover:bg-[#d5b591] text-zinc-950 font-bold text-xs uppercase tracking-wide"
                 >
-                  Done
+                  Close
                 </button>
               </div>
             </div>

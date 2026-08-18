@@ -1,12 +1,33 @@
-import { CaseData, AccusationSubmission, VerdictResult, ClueItem } from '../types';
+import { CaseData, AccusationSubmission, VerdictResult } from '../types';
+
+/**
+ * The client no longer holds case solutions. It refers to cases by id and the
+ * server looks up the authoritative copy, so `isGuilty`, `secret` and the
+ * `solution` block never reach the browser.
+ */
+
+async function postJson<T>(url: string, body: unknown, fallbackError: string): Promise<T> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || fallbackError);
+  }
+
+  return response.json();
+}
 
 export interface InterrogationRequest {
-  caseData: CaseData;
+  caseId: string;
   suspectId: string;
   playerMessage: string;
   conversationHistory: { sender: string; text: string }[];
-  presentedEvidence?: ClueItem | null;
-  currentMood?: { nervousness: number; openness: number };
+  /** Clue id only — the server resolves the actual evidence from its own copy. */
+  presentedEvidence?: string | null;
 }
 
 export interface InterrogationResponse {
@@ -17,63 +38,40 @@ export interface InterrogationResponse {
   revealedClueHint?: string | null;
 }
 
-export async function interrogateSuspect(payload: InterrogationRequest): Promise<InterrogationResponse> {
-  const response = await fetch('/api/interrogate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+/** Fetch the redacted, playable case list. */
+export async function fetchCases(): Promise<CaseData[]> {
+  const response = await fetch('/api/cases');
+  if (!response.ok) throw new Error('Could not load cases from the server.');
+  const data = await response.json();
+  return data.cases as CaseData[];
+}
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || 'Failed to interrogate suspect');
-  }
-
-  return response.json();
+export async function interrogateSuspect(
+  payload: InterrogationRequest
+): Promise<InterrogationResponse> {
+  return postJson('/api/interrogate', payload, 'Failed to interrogate suspect');
 }
 
 export async function generateAICase(theme: string, difficulty: string): Promise<CaseData> {
-  const response = await fetch('/api/cases/generate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ theme, difficulty }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || 'Failed to generate AI case');
-  }
-
-  return response.json();
+  return postJson('/api/cases/generate', { theme, difficulty }, 'Failed to generate AI case');
 }
 
 export async function evaluateAccusation(
-  caseData: CaseData,
+  caseId: string,
   accusation: AccusationSubmission
 ): Promise<VerdictResult> {
-  const response = await fetch('/api/evaluate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ caseData, accusation }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || 'Failed to evaluate case');
-  }
-
-  return response.json();
+  return postJson('/api/evaluate', { caseId, accusation }, 'Failed to evaluate case');
 }
 
 export async function getDetectiveHint(
-  caseData: CaseData,
+  caseId: string,
   discoveredClueIds: string[],
   chatCount: number
 ): Promise<string> {
   const response = await fetch('/api/hint', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ caseData, discoveredClueIds, chatCount }),
+    body: JSON.stringify({ caseId, discoveredClueIds, chatCount }),
   });
 
   if (!response.ok) {

@@ -129,7 +129,7 @@ export const CaseBoard: React.FC<CaseBoardProps> = ({
 
       {/* Sticky Note Creator Dropdown */}
       {showAddNote && (
-        <div className="bg-[#18181b] border border-[#c4a17a]/40 rounded-2xl p-5 shadow-2xl max-w-md animate-in fade-in">
+        <div className="bg-[#18181b] border border-[#c4a17a]/40 rounded-2xl p-5 shadow-2xl max-w-md animate-fade-in">
           <div className="text-xs font-bold text-[#c4a17a] uppercase tracking-wider mb-2">Write Detective Memo</div>
           <textarea
             value={newNoteText}
@@ -364,7 +364,7 @@ export const CaseBoard: React.FC<CaseBoardProps> = ({
                 <p className="text-zinc-300 text-[11px] leading-relaxed">
                   {evt.description}
                 </p>
-                <div className="text-[10px] text-zinc-500 italic pt-1.5 border-t border-zinc-850">
+                <div className="text-[10px] text-zinc-500 italic pt-1.5 border-t border-zinc-800">
                   Source: {evt.source}
                 </div>
               </div>

@@ -22,6 +22,13 @@ export const HintModal: React.FC<HintModalProps> = ({
   const [hintText, setHintText] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const handleClose = () => {
+    // Without this the previous memo is still on screen next time the modal opens,
+    // with no way to request a fresh one.
+    setHintText(null);
+    onClose();
+  };
+
   if (!isOpen) return null;
 
   const discoveredClueIds = clues.filter((c) => c.discovered).map((c) => c.id);
@@ -30,7 +37,7 @@ export const HintModal: React.FC<HintModalProps> = ({
     setLoading(true);
     playPaperRustle();
     try {
-      const hint = await getDetectiveHint(caseData, discoveredClueIds, chatCount);
+      const hint = await getDetectiveHint(caseData.id, discoveredClueIds, chatCount);
       setHintText(hint);
     } catch (err) {
       setHintText('Cross-reference the suspects’ claimed alibis with the physical evidence logs in your binder.');
@@ -40,11 +47,11 @@ export const HintModal: React.FC<HintModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-in fade-in">
+    <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in">
       <div className="bg-[#18181b] border border-white/10 rounded-2xl max-w-md w-full p-6 sm:p-7 shadow-2xl space-y-5 relative">
         <button
-          onClick={onClose}
-          className="absolute top-4 right-4 p-1.5 rounded-xl bg-zinc-800 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-750 transition"
+          onClick={handleClose}
+          className="absolute top-4 right-4 p-1.5 rounded-xl bg-zinc-800 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 transition"
         >
           <X className="w-5 h-5" />
         </button>
@@ -93,12 +100,20 @@ export const HintModal: React.FC<HintModalProps> = ({
             </button>
           )}
           {hintText && (
-            <button
-              onClick={onClose}
-              className="px-5 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-xs border border-white/5"
-            >
-              Understood
-            </button>
+            <>
+              <button
+                onClick={() => setHintText(null)}
+                className="px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold text-xs border border-white/5"
+              >
+                Request Another
+              </button>
+              <button
+                onClick={handleClose}
+                className="px-5 py-2.5 rounded-xl bg-[#c4a17a] hover:bg-[#d5b591] text-zinc-950 font-bold text-xs"
+              >
+                Understood
+              </button>
+            </>
           )}
         </div>
       </div>

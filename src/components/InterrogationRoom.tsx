@@ -90,12 +90,11 @@ export const InterrogationRoom: React.FC<InterrogationRoomProps> = ({
 
     try {
       const result = await interrogateSuspect({
-        caseData,
+        caseId: caseData.id,
         suspectId: suspect.id,
         playerMessage: textToSend || `I am presenting this evidence: ${evidenceToPresent?.name}. Explain yourself.`,
         conversationHistory: messages.map((m) => ({ sender: m.sender, text: m.text })),
-        presentedEvidence: evidenceToPresent,
-        currentMood: { nervousness: suspect.nervousness, openness: suspect.openness },
+        presentedEvidence: evidenceToPresent?.id ?? null,
       });
 
       const nextNervousness = Math.min(100, Math.max(0, suspect.nervousness + (result.nervousnessDelta || 0)));

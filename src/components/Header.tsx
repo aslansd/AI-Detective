@@ -96,7 +96,7 @@ export const Header: React.FC<HeaderProps> = ({
               </button>
 
               {caseDropdownOpen && (
-                <div className="absolute left-0 mt-2 w-72 bg-[#18181b] rounded-xl shadow-2xl border border-white/10 py-2 z-50 divide-y divide-zinc-800 animate-in fade-in">
+                <div className="absolute left-0 mt-2 w-72 bg-[#18181b] rounded-xl shadow-2xl border border-white/10 py-2 z-50 divide-y divide-zinc-800 animate-fade-in">
                   <div className="px-3.5 py-1.5 text-[11px] font-semibold text-[#c4a17a] uppercase tracking-wider">
                     Active Mysteries
                   </div>

@@ -9,17 +9,24 @@ export interface Suspect {
   personality: string;
   relationshipToVictim: string;
   statedAlibi: string;
-  actualActivity: string;
-  secret: string;
-  isGuilty: boolean;
-  motive: string;
   suspicionLevel: number; // 0 - 100
   nervousness: number; // 0 - 100
   openness: number; // 0 - 100
-  privateKnowledge: string[];
-  falseBeliefs: string[];
   initialGreeting: string;
   voiceStyle: string;
+
+  /**
+   * SERVER-ONLY FIELDS.
+   * These are the answers. They are stripped by `toPublicCase()` in server/redact.ts
+   * before any case is sent to the browser, so they are always `undefined` on the
+   * client. Never render these in a component.
+   */
+  actualActivity?: string;
+  secret?: string;
+  isGuilty?: boolean;
+  motive?: string;
+  privateKnowledge?: string[];
+  falseBeliefs?: string[];
 }
 
 export interface ClueItem {
@@ -41,9 +48,11 @@ export interface LocationInfo {
   name: string;
   description: string;
   imageTheme: string;
-  clueIds: string[];
   isCrimeScene: boolean;
-  searchProgress: number; // 0 - 100
+  /** Kept in sync with `clue.locationId` by the server. Gameplay reads `clue.locationId`. */
+  clueIds?: string[];
+  /** @deprecated Not used by any component. */
+  searchProgress?: number;
 }
 
 export interface TimelineEvent {
@@ -85,8 +94,10 @@ export interface CaseData {
   locations: LocationInfo[];
   clues: ClueItem[];
   timeline: TimelineEvent[];
-  solution: TrueCrimeSolution;
   isAiGenerated?: boolean;
+
+  /** SERVER-ONLY. Stripped before the case is sent to the browser. */
+  solution?: TrueCrimeSolution;
 }
 
 export interface ChatMessage {
@@ -114,6 +125,8 @@ export interface VerdictResult {
   isCorrectMotive: boolean;
   deductionScore: number; // 0 - 100
   rankTitle: string; // e.g. "Grand Master Detective", "Senior Inspector", "Field Sleuth", "Wrongful Accuser"
+  /** Revealed only with the verdict, once the game is over. */
+  culpritName: string;
   summaryFeedback: string;
   detailedCritique: {
     culpritDeduction: string;

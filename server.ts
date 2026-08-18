@@ -1,10 +1,41 @@
 import express from "express";
 import path from "path";
+import crypto from "crypto";
 import dotenv from "dotenv";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
+import type { CaseData } from "./src/types";
+import { INITIAL_CASES } from "./server/cases";
+import { normalizeCase, toPublicCase } from "./server/redact";
 
 dotenv.config();
+
+/**
+ * Authoritative, unredacted case store. The browser never receives these objects —
+ * it receives `toPublicCase()` copies and refers to cases by id from then on.
+ */
+const CASE_STORE = new Map<string, CaseData>();
+
+for (const rawCase of INITIAL_CASES) {
+  const { normalized, issues } = normalizeCase(rawCase);
+  for (const issue of issues) console.warn(`[case:${issue.caseId}] ${issue.message}`);
+  CASE_STORE.set(normalized.id, normalized);
+}
+console.log(`Loaded ${CASE_STORE.size} case(s).`);
+
+/** AI-generated cases are held in memory only — see README ("Generated cases and scaling"). */
+const MAX_GENERATED_CASES = 50;
+
+function rememberCase(caseData: CaseData) {
+  CASE_STORE.set(caseData.id, caseData);
+  if (CASE_STORE.size > INITIAL_CASES.length + MAX_GENERATED_CASES) {
+    for (const key of CASE_STORE.keys()) {
+      if (!INITIAL_CASES.some((c) => c.id === key)) {
+        CASE_STORE.delete(key);
+        break;
+      }
+    }
+  }
+}
 
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -24,7 +55,9 @@ function getGeminiClient(): GoogleGenAI | null {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  // Cloud Run injects PORT and probes it. Never hardcode this.
+  const PORT = Number(process.env.PORT) || 3000;
+  const isDev = process.env.NODE_ENV === "development";
 
   app.use(express.json({ limit: "10mb" }));
 
@@ -33,19 +66,47 @@ async function startServer() {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
+  /**
+   * Resolve a caseId from a request body to the full, unredacted case.
+   * Responds 404/410 and returns null when it cannot.
+   */
+  function requireCase(req: express.Request, res: express.Response): CaseData | null {
+    const caseId = req.body?.caseId;
+    if (!caseId || typeof caseId !== "string") {
+      res.status(400).json({ error: "A caseId is required." });
+      return null;
+    }
+    const found = CASE_STORE.get(caseId);
+    if (!found) {
+      res.status(410).json({
+        error:
+          "This case is no longer available on the server. Generated cases are kept in memory and are lost when the server restarts. Please generate a new one.",
+      });
+      return null;
+    }
+    return found;
+  }
+
+  // 0. Case list — redacted. This is the only way the client obtains case data.
+  app.get("/api/cases", (req, res) => {
+    const publicCases = INITIAL_CASES.map((c) => toPublicCase(CASE_STORE.get(c.id)!));
+    res.json({ cases: publicCases });
+  });
+
   // 1. Suspect Interrogation Endpoint
   app.post("/api/interrogate", async (req, res) => {
     try {
+      const caseData = requireCase(req, res);
+      if (!caseData) return;
+
       const {
-        caseData,
         suspectId,
         playerMessage,
         conversationHistory = [],
         presentedEvidence = null,
-        currentMood = {},
       } = req.body;
 
-      const suspect = caseData?.suspects?.find((s: any) => s.id === suspectId);
+      const suspect = caseData.suspects.find((s) => s.id === suspectId);
       if (!suspect) {
         return res.status(404).json({ error: "Suspect not found in case" });
       }
@@ -67,11 +128,16 @@ async function startServer() {
         .map((m: any) => `${m.sender === "player" ? "Detective" : suspect.name}: ${m.text}`)
         .join("\n");
 
-      const presentedEvidenceInfo = presentedEvidence
+      // Resolve the evidence from the server's own copy of the case so a modified
+      // client cannot invent incriminating evidence that does not exist.
+      const evidenceId = typeof presentedEvidence === "string" ? presentedEvidence : presentedEvidence?.id;
+      const evidence = evidenceId ? caseData.clues.find((c) => c.id === evidenceId) : null;
+
+      const presentedEvidenceInfo = evidence
         ? `\n[DETECTIVE CONFRONTS YOU WITH PHYSICAL EVIDENCE]:
-Item Name: ${presentedEvidence.name}
-Description: ${presentedEvidence.description}
-Detailed Forensics: ${presentedEvidence.detailedAnalysis}`
+Item Name: ${evidence.name}
+Description: ${evidence.description}
+Detailed Forensics: ${evidence.detailedAnalysis}`
         : "";
 
       const systemInstruction = `You are roleplaying as ${suspect.name}, a character in an interactive murder mystery detective game.
@@ -377,6 +443,10 @@ Generate the full case JSON with all rich fields populated.`;
       const generatedCase = JSON.parse(response.text || "{}");
       generatedCase.isAiGenerated = true;
 
+      // Never trust the model to produce a unique id — a collision would make the
+      // new case unselectable in the UI.
+      generatedCase.id = `ai-case-${crypto.randomUUID()}`;
+
       // Assign portraits fallback if avatars are missing or generic
       const defaultAvatars = [
         "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
@@ -393,7 +463,23 @@ Generate the full case JSON with all rich fields populated.`;
         });
       }
 
-      res.json(generatedCase);
+      // Repair self-consistency before the case is ever playable, and reject it
+      // outright if the model produced something structurally broken.
+      const { normalized, issues } = normalizeCase(generatedCase as CaseData);
+      for (const issue of issues) console.warn(`[generated:${issue.caseId}] ${issue.message}`);
+
+      const fatal = issues.filter((i) =>
+        /no suspects|no locations|no clues|no solution block|expected exactly 1 guilty/.test(i.message)
+      );
+      if (fatal.length) {
+        return res.status(502).json({
+          error: "The generated case was not solvable. Please try again.",
+          details: fatal.map((f) => f.message).join("; "),
+        });
+      }
+
+      rememberCase(normalized);
+      res.json(toPublicCase(normalized));
     } catch (err: any) {
       console.error("Case generation error:", err);
       res.status(500).json({
@@ -406,11 +492,18 @@ Generate the full case JSON with all rich fields populated.`;
   // 3. Deduction & Accusation Evaluation Endpoint
   app.post("/api/evaluate", async (req, res) => {
     try {
-      const { caseData, accusation } = req.body;
+      const caseData = requireCase(req, res);
+      if (!caseData) return;
+
+      const { accusation } = req.body;
+      if (!accusation?.accusedSuspectId) {
+        return res.status(400).json({ error: "An accusation with accusedSuspectId is required." });
+      }
+
       const ai = getGeminiClient();
 
-      const trueSolution = caseData.solution;
-      const accusedSuspect = caseData.suspects.find((s: any) => s.id === accusation.accusedSuspectId);
+      const trueSolution = caseData.solution!;
+      const accusedSuspect = caseData.suspects.find((s) => s.id === accusation.accusedSuspectId);
       const isCulpritCorrect = accusation.accusedSuspectId === trueSolution.culpritId;
 
       if (!ai) {
@@ -422,6 +515,7 @@ Generate the full case JSON with all rich fields populated.`;
           isCorrectMotive: true,
           deductionScore,
           rankTitle: isCulpritCorrect ? "Senior Detective" : "Miscarriage of Justice",
+          culpritName: trueSolution.culpritName,
           summaryFeedback: isCulpritCorrect
             ? `You successfully identified ${trueSolution.culpritName} as the true perpetrator!`
             : `Wrongful accusation! You accused ${accusedSuspect?.name || "the wrong person"}, while ${trueSolution.culpritName} got away with murder.`,
@@ -535,6 +629,9 @@ TASK:
       });
 
       const parsed = JSON.parse(response.text || "{}");
+      // The culprit is revealed with the verdict, so the client never needs the
+      // solution block up front.
+      parsed.culpritName = trueSolution.culpritName;
       res.json(parsed);
     } catch (err: any) {
       console.error("Evaluation error:", err);
@@ -548,7 +645,10 @@ TASK:
   // 4. Detective Hint / Forensics Dispatch
   app.post("/api/hint", async (req, res) => {
     try {
-      const { caseData, discoveredClueIds = [], chatCount = 0 } = req.body;
+      const caseData = requireCase(req, res);
+      if (!caseData) return;
+
+      const { discoveredClueIds = [], chatCount = 0 } = req.body;
       const ai = getGeminiClient();
 
       if (!ai) {
@@ -561,7 +661,7 @@ TASK:
 CASE: ${caseData.title}
 Discovered Clues: ${discoveredClueIds.length} out of ${caseData.clues.length}
 Interrogations conducted: ${chatCount}
-Solution Culprit: ${caseData.solution.culpritName}
+Solution Culprit: ${caseData.solution!.culpritName}
 
 Give a 2-sentence mysterious yet helpful pointer on what area, document, or suspect relationship the detective should look into next.`;
 
@@ -576,23 +676,58 @@ Give a 2-sentence mysterious yet helpful pointer on what area, document, or susp
     }
   });
 
-  // Vite middleware setup
-  if (process.env.NODE_ENV !== "production") {
+  // Unknown API routes must return JSON, not the SPA shell — otherwise a typo'd
+  // endpoint yields HTML and the client fails with a confusing JSON parse error.
+  app.use("/api", (req, res) => {
+    res.status(404).json({ error: `Unknown API route: ${req.method} ${req.originalUrl}` });
+  });
+
+  // Production is the DEFAULT. Only an explicit NODE_ENV=development starts Vite,
+  // so a deployment can never accidentally serve unminified source over HMR.
+  if (isDev) {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
+    console.log("Running in DEVELOPMENT mode (Vite middleware + HMR).");
   } else {
     const distPath = path.join(process.cwd(), "dist");
+
+    // The build writes dist/server.cjs (+ sourcemap) alongside the client assets.
+    // Block them BEFORE express.static, or the bundled backend source is downloadable.
+    app.use((req, res, next) => {
+      if (/^\/server\.cjs(\.map)?$/.test(req.path)) {
+        return res.status(404).json({ error: "Not found" });
+      }
+      next();
+    });
+
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
+
+    // SPA fallback for everything that is not an API route.
+    app.get(/^\/(?!api\/).*/, (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
+    console.log("Running in PRODUCTION mode (serving ./dist).");
   }
 
+  // Catch-all error handler so a malformed body returns JSON instead of an HTML stack trace.
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error("Unhandled error:", err);
+    if (res.headersSent) return;
+    if (err?.type === "entity.parse.failed") {
+      return res.status(400).json({ error: "Malformed JSON in request body." });
+    }
+    if (err?.type === "entity.too.large") {
+      return res.status(413).json({ error: "Request body too large." });
+    }
+    res.status(err?.status || 500).json({ error: "Internal server error" });
+  });
+
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`AI Detective server running on http://0.0.0.0:${PORT}`);
+    console.log(`AI Detective server listening on port ${PORT}`);
   });
 }
 

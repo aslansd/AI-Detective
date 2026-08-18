@@ -120,7 +120,7 @@ export const LocationsExplorer: React.FC<LocationsExplorerProps> = ({
               className={`p-4 rounded-2xl border text-left transition-all duration-200 flex flex-col justify-between relative overflow-hidden ${
                 isSelected
                   ? 'bg-[#18181b] border-[#c4a17a] shadow-xl ring-1 ring-[#c4a17a]/50'
-                  : 'bg-[#121215] border-white/5 hover:border-white/15 hover:bg-zinc-850'
+                  : 'bg-[#121215] border-white/5 hover:border-white/15 hover:bg-zinc-800'
               }`}
             >
               <div>
@@ -217,7 +217,7 @@ export const LocationsExplorer: React.FC<LocationsExplorerProps> = ({
                     }}
                     className={`rounded-2xl p-4 border transition-all duration-200 flex flex-col justify-between ${
                       clue.discovered
-                        ? 'bg-[#121215] hover:bg-zinc-850 border-[#c4a17a]/40 hover:border-[#c4a17a] cursor-pointer shadow-lg group'
+                        ? 'bg-[#121215] hover:bg-zinc-800 border-[#c4a17a]/40 hover:border-[#c4a17a] cursor-pointer shadow-lg group'
                         : 'bg-[#121215]/50 border-dashed border-zinc-800 opacity-60'
                     }`}
                   >
@@ -260,7 +260,7 @@ export const LocationsExplorer: React.FC<LocationsExplorerProps> = ({
 
       {/* Forensic Inspection Modal */}
       {inspectingClue && (
-        <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-[#18181b] border border-white/10 rounded-2xl max-w-lg w-full p-6 sm:p-7 shadow-2xl space-y-4 relative">
             <button
               id="btn-close-inspect-clue"

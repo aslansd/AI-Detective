@@ -3,8 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
-import { INITIAL_CASES } from './data/cases';
+import React, { useState, useEffect, useRef } from 'react';
 import { CaseData, Suspect, ChatMessage, ClueItem, PinboardNode, PinboardLink } from './types';
 import { Header } from './components/Header';
 import { SuspectsGrid } from './components/SuspectsGrid';
@@ -15,55 +14,154 @@ import { Notebook } from './components/Notebook';
 import { AccusationModal } from './components/AccusationModal';
 import { GenerateCaseModal } from './components/GenerateCaseModal';
 import { HintModal } from './components/HintModal';
-import { playClueFound, playPaperRustle } from './utils/audio';
+import { playPaperRustle } from './utils/audio';
+import { fetchCases } from './services/api';
+import { loadState, saveState } from './utils/storage';
+
+type TabId = 'suspects' | 'locations' | 'pinboard' | 'notebook';
+
+/** The slice of state that survives a page refresh. */
+interface SaveData {
+  currentCaseId: string;
+  generatedCases: CaseData[];
+  clues: Record<string, ClueItem[]>;
+  chats: Record<string, Record<string, ChatMessage[]>>;
+  notes: Record<string, string>;
+  nodes: Record<string, PinboardNode[]>;
+  links: Record<string, PinboardLink[]>;
+  moods: Record<string, Record<string, { nervousness: number; openness: number }>>;
+}
 
 export default function App() {
-  const [allCases, setAllCases] = useState<CaseData[]>(INITIAL_CASES);
-  const [currentCaseId, setCurrentCaseId] = useState<string>(INITIAL_CASES[0].id);
+  const saved = useRef<SaveData | null>(loadState<SaveData>()).current;
 
-  // Active case data
-  const currentCase = allCases.find((c) => c.id === currentCaseId) || allCases[0];
+  const [allCases, setAllCases] = useState<CaseData[]>(saved?.generatedCases || []);
+  const [currentCaseId, setCurrentCaseId] = useState<string>(saved?.currentCaseId || '');
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Per-case state
-  const [cluesState, setCluesState] = useState<Record<string, ClueItem[]>>(() => {
-    const initial: Record<string, ClueItem[]> = {};
-    INITIAL_CASES.forEach((c) => {
-      initial[c.id] = c.clues;
-    });
-    return initial;
-  });
-
-  const [chatHistoryState, setChatHistoryState] = useState<Record<string, Record<string, ChatMessage[]>>>({});
-  const [playerNotesState, setPlayerNotesState] = useState<Record<string, string>>({});
-  const [pinboardNodesState, setPinboardNodesState] = useState<Record<string, PinboardNode[]>>({});
-  const [pinboardLinksState, setPinboardLinksState] = useState<Record<string, PinboardLink[]>>({});
+  const [cluesState, setCluesState] = useState<Record<string, ClueItem[]>>(saved?.clues || {});
+  const [chatHistoryState, setChatHistoryState] = useState<Record<string, Record<string, ChatMessage[]>>>(saved?.chats || {});
+  const [playerNotesState, setPlayerNotesState] = useState<Record<string, string>>(saved?.notes || {});
+  const [pinboardNodesState, setPinboardNodesState] = useState<Record<string, PinboardNode[]>>(saved?.nodes || {});
+  const [pinboardLinksState, setPinboardLinksState] = useState<Record<string, PinboardLink[]>>(saved?.links || {});
+  const [moodState, setMoodState] = useState<Record<string, Record<string, { nervousness: number; openness: number }>>>(saved?.moods || {});
 
   // Navigation & UI state
-  const [activeTab, setActiveTab] = useState<'suspects' | 'locations' | 'pinboard' | 'notebook'>('suspects');
-  const [selectedSuspect, setSelectedSuspect] = useState<Suspect | null>(null);
+  const [activeTab, setActiveTab] = useState<TabId>('suspects');
+  const [selectedSuspectId, setSelectedSuspectId] = useState<string | null>(null);
   const [isAccusationOpen, setIsAccusationOpen] = useState(false);
   const [isGenerateOpen, setIsGenerateOpen] = useState(false);
   const [isHintOpen, setIsHintOpen] = useState(false);
 
-  // Current case specific variables
+  // Load the redacted cases from the server on mount.
+  useEffect(() => {
+    let cancelled = false;
+
+    fetchCases()
+      .then((serverCases) => {
+        if (cancelled) return;
+        setAllCases((prev) => {
+          // Keep any restored AI-generated cases that the server no longer knows about;
+          // they stay browsable and surface a clear error only if the player acts on them.
+          const generated = prev.filter((c) => !serverCases.some((s) => s.id === c.id));
+          return [...generated, ...serverCases];
+        });
+        setCurrentCaseId((prev) =>
+          prev && [...serverCases].some((c) => c.id === prev) ? prev : prev || serverCases[0]?.id || ''
+        );
+      })
+      .catch((err) => !cancelled && setLoadError(err.message || 'Could not reach the server.'))
+      .finally(() => !cancelled && setIsLoading(false));
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const currentCase = allCases.find((c) => c.id === currentCaseId) || allCases[0];
+
+  // Persist progress whenever it changes.
+  useEffect(() => {
+    if (!currentCase) return;
+    saveState<SaveData>({
+      currentCaseId: currentCase.id,
+      generatedCases: allCases.filter((c) => c.isAiGenerated),
+      clues: cluesState,
+      chats: chatHistoryState,
+      notes: playerNotesState,
+      nodes: pinboardNodesState,
+      links: pinboardLinksState,
+      moods: moodState,
+    });
+  }, [
+    currentCase,
+    allCases,
+    cluesState,
+    chatHistoryState,
+    playerNotesState,
+    pinboardNodesState,
+    pinboardLinksState,
+    moodState,
+  ]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-[#09090b] text-zinc-100 flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <div className="w-12 h-12 rounded-full border-4 border-[#c4a17a] border-t-transparent animate-spin mx-auto" />
+          <p className="text-sm text-zinc-400 font-serif">Opening the case files...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentCase) {
+    return (
+      <div className="min-h-screen bg-[#09090b] text-zinc-100 flex items-center justify-center p-6">
+        <div className="max-w-md text-center space-y-3">
+          <h1 className="text-xl font-bold font-serif">No cases available</h1>
+          <p className="text-sm text-zinc-400">
+            {loadError || 'The server returned no cases. Check the server logs and reload.'}
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-5 py-2.5 rounded-xl bg-[#c4a17a] hover:bg-[#d5b591] text-zinc-950 font-bold text-xs"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Apply persisted mood on top of the case's baseline values.
+  const caseMoods = moodState[currentCase.id] || {};
+  const suspectsWithMood: Suspect[] = currentCase.suspects.map((s) =>
+    caseMoods[s.id] ? { ...s, ...caseMoods[s.id] } : s
+  );
+  const caseWithMood: CaseData = { ...currentCase, suspects: suspectsWithMood };
+
   const currentClues = cluesState[currentCase.id] || currentCase.clues;
   const currentCaseChats = chatHistoryState[currentCase.id] || {};
   const currentPlayerNotes = playerNotesState[currentCase.id] || '';
   const currentNodes = pinboardNodesState[currentCase.id] || [];
   const currentLinks = pinboardLinksState[currentCase.id] || [];
+  const selectedSuspect = selectedSuspectId
+    ? suspectsWithMood.find((s) => s.id === selectedSuspectId) || null
+    : null;
 
   const discoveredCluesCount = currentClues.filter((c) => c.discovered).length;
   const totalCluesCount = currentClues.length;
 
-  // Handle case switching
   const handleSelectCase = (caseId: string) => {
     playPaperRustle();
     setCurrentCaseId(caseId);
-    setSelectedSuspect(null);
+    setSelectedSuspectId(null);
     setActiveTab('suspects');
   };
 
-  // Handle discovering a clue
   const handleDiscoverClue = (clueId: string) => {
     setCluesState((prev) => {
       const caseClues = prev[currentCase.id] || currentCase.clues;
@@ -72,97 +170,102 @@ export default function App() {
     });
   };
 
-  // Handle sending a chat message during interrogation
   const handleSendMessage = (msg: ChatMessage) => {
-    if (!selectedSuspect) return;
+    if (!selectedSuspectId) return;
     setChatHistoryState((prev) => {
       const caseChats = prev[currentCase.id] || {};
-      const suspectMsgs = caseChats[selectedSuspect.id] || [];
+      const suspectMsgs = caseChats[selectedSuspectId] || [];
       return {
         ...prev,
-        [currentCase.id]: {
-          ...caseChats,
-          [selectedSuspect.id]: [...suspectMsgs, msg],
-        },
+        [currentCase.id]: { ...caseChats, [selectedSuspectId]: [...suspectMsgs, msg] },
       };
     });
   };
 
-  // Update suspect psychological state (nervousness / openness)
   const handleUpdateSuspectMood = (suspectId: string, nervousness: number, openness: number) => {
-    setAllCases((prev) =>
-      prev.map((c) => {
-        if (c.id !== currentCase.id) return c;
-        return {
-          ...c,
-          suspects: c.suspects.map((s) => (s.id === suspectId ? { ...s, nervousness, openness } : s)),
-        };
-      })
-    );
+    setMoodState((prev) => ({
+      ...prev,
+      [currentCase.id]: { ...(prev[currentCase.id] || {}), [suspectId]: { nervousness, openness } },
+    }));
   };
 
-  // Pin / Unpin a message
   const handlePinMessage = (msgId: string) => {
-    if (!selectedSuspect) return;
+    if (!selectedSuspectId) return;
     setChatHistoryState((prev) => {
       const caseChats = prev[currentCase.id] || {};
-      const suspectMsgs = caseChats[selectedSuspect.id] || [];
+      const suspectMsgs = caseChats[selectedSuspectId] || [];
       return {
         ...prev,
         [currentCase.id]: {
           ...caseChats,
-          [selectedSuspect.id]: suspectMsgs.map((m) => (m.id === msgId ? { ...m, isPinned: !m.isPinned } : m)),
+          [selectedSuspectId]: suspectMsgs.map((m) =>
+            m.id === msgId ? { ...m, isPinned: !m.isPinned } : m
+          ),
         },
       };
     });
   };
 
-  // Pinboard handlers
-  const handleAddNode = (node: PinboardNode) => {
+  const handleAddNode = (node: PinboardNode) =>
     setPinboardNodesState((prev) => ({
       ...prev,
       [currentCase.id]: [...(prev[currentCase.id] || []), node],
     }));
-  };
 
-  const handleRemoveNode = (nodeId: string) => {
+  const handleRemoveNode = (nodeId: string) =>
     setPinboardNodesState((prev) => ({
       ...prev,
       [currentCase.id]: (prev[currentCase.id] || []).filter((n) => n.id !== nodeId),
     }));
-  };
 
-  const handleAddLink = (link: PinboardLink) => {
+  const handleAddLink = (link: PinboardLink) =>
     setPinboardLinksState((prev) => ({
       ...prev,
       [currentCase.id]: [...(prev[currentCase.id] || []), link],
     }));
-  };
 
-  const handleRemoveLink = (linkId: string) => {
+  const handleRemoveLink = (linkId: string) =>
     setPinboardLinksState((prev) => ({
       ...prev,
       [currentCase.id]: (prev[currentCase.id] || []).filter((l) => l.id !== linkId),
     }));
-  };
 
-  // Handling generated AI mystery case
   const handleCaseGenerated = (newCase: CaseData) => {
     setAllCases((prev) => [newCase, ...prev]);
     setCluesState((prev) => ({ ...prev, [newCase.id]: newCase.clues }));
     setCurrentCaseId(newCase.id);
-    setSelectedSuspect(null);
+    setSelectedSuspectId(null);
     setActiveTab('suspects');
   };
 
-  // Calculate total chat interactions in current case
-  const totalChatInteractions = Object.values(currentCaseChats).reduce((acc: number, curr: ChatMessage[]) => acc + (curr?.length || 0), 0);
+  /**
+   * Full reset of a single case. Previously this cleared only clues and chats,
+   * leaving suspects at their elevated nervousness and the corkboard/journal intact.
+   */
+  const handleRestartCase = () => {
+    const id = currentCase.id;
+    setCluesState((prev) => ({
+      ...prev,
+      [id]: currentCase.clues.map((c) => ({ ...c, discovered: false })),
+    }));
+    setChatHistoryState((prev) => ({ ...prev, [id]: {} }));
+    setMoodState((prev) => ({ ...prev, [id]: {} }));
+    setPinboardNodesState((prev) => ({ ...prev, [id]: [] }));
+    setPinboardLinksState((prev) => ({ ...prev, [id]: [] }));
+    setPlayerNotesState((prev) => ({ ...prev, [id]: '' }));
+    setSelectedSuspectId(null);
+    setActiveTab('suspects');
+  };
+
+  const totalChatInteractions = Object.values(currentCaseChats).reduce(
+    (acc: number, curr: ChatMessage[]) => acc + (curr?.length || 0),
+    0
+  );
 
   return (
     <div className="min-h-screen bg-[#09090b] text-zinc-100 flex flex-col font-sans selection:bg-[#c4a17a] selection:text-[#09090b]">
-      {/* Top Header & Tab Navigation */}
       <Header
-        currentCase={currentCase}
+        currentCase={caseWithMood}
         allCases={allCases}
         onSelectCase={handleSelectCase}
         onOpenGenerateModal={() => setIsGenerateOpen(true)}
@@ -170,57 +273,50 @@ export default function App() {
         onOpenHintModal={() => setIsHintOpen(true)}
         activeTab={activeTab}
         setActiveTab={(tab) => {
-          setSelectedSuspect(null);
+          setSelectedSuspectId(null);
           setActiveTab(tab);
         }}
         discoveredCluesCount={discoveredCluesCount}
         totalCluesCount={totalCluesCount}
       />
 
-      {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
-        {/* Suspects View or Active Interrogation Chamber */}
-        {activeTab === 'suspects' && (
-          <>
-            {selectedSuspect ? (
-              <InterrogationRoom
-                suspect={selectedSuspect}
-                caseData={currentCase}
-                messages={currentCaseChats[selectedSuspect.id] || []}
-                discoveredClues={currentClues.filter((c) => c.discovered)}
-                onSendMessage={handleSendMessage}
-                onUpdateSuspectMood={handleUpdateSuspectMood}
-                onPinMessage={handlePinMessage}
-                onBack={() => setSelectedSuspect(null)}
-              />
-            ) : (
-              <SuspectsGrid
-                currentCase={currentCase}
-                chatHistory={currentCaseChats}
-                onSelectSuspect={(suspect) => {
-                  playPaperRustle();
-                  setSelectedSuspect(suspect);
-                }}
-              />
-            )}
-          </>
-        )}
+        {activeTab === 'suspects' &&
+          (selectedSuspect ? (
+            <InterrogationRoom
+              suspect={selectedSuspect}
+              caseData={caseWithMood}
+              messages={currentCaseChats[selectedSuspect.id] || []}
+              discoveredClues={currentClues.filter((c) => c.discovered)}
+              onSendMessage={handleSendMessage}
+              onUpdateSuspectMood={handleUpdateSuspectMood}
+              onPinMessage={handlePinMessage}
+              onBack={() => setSelectedSuspectId(null)}
+            />
+          ) : (
+            <SuspectsGrid
+              currentCase={caseWithMood}
+              chatHistory={currentCaseChats}
+              onSelectSuspect={(suspect) => {
+                playPaperRustle();
+                setSelectedSuspectId(suspect.id);
+              }}
+            />
+          ))}
 
-        {/* Locations & Crime Scene Explorer */}
         {activeTab === 'locations' && (
           <LocationsExplorer
-            caseData={currentCase}
+            caseData={caseWithMood}
             clues={currentClues}
             onDiscoverClue={handleDiscoverClue}
           />
         )}
 
-        {/* Detective Pinboard / Mind Map */}
         {activeTab === 'pinboard' && (
           <CaseBoard
-            caseData={currentCase}
+            caseData={caseWithMood}
             clues={currentClues}
-            suspects={currentCase.suspects}
+            suspects={suspectsWithMood}
             nodes={currentNodes}
             links={currentLinks}
             onAddNode={handleAddNode}
@@ -230,10 +326,9 @@ export default function App() {
           />
         )}
 
-        {/* Detective Field Binder & Evidence Locker */}
         {activeTab === 'notebook' && (
           <Notebook
-            caseData={currentCase}
+            caseData={caseWithMood}
             clues={currentClues}
             chatHistory={currentCaseChats}
             playerNotes={currentPlayerNotes}
@@ -244,17 +339,12 @@ export default function App() {
         )}
       </main>
 
-      {/* Modals */}
       <AccusationModal
-        caseData={currentCase}
+        caseData={caseWithMood}
         clues={currentClues}
         isOpen={isAccusationOpen}
         onClose={() => setIsAccusationOpen(false)}
-        onRestartCase={() => {
-          setCluesState((prev) => ({ ...prev, [currentCase.id]: currentCase.clues }));
-          setChatHistoryState((prev) => ({ ...prev, [currentCase.id]: {} }));
-          setSelectedSuspect(null);
-        }}
+        onRestartCase={handleRestartCase}
         onOpenGenerateNew={() => setIsGenerateOpen(true)}
       />
 
@@ -267,7 +357,7 @@ export default function App() {
       <HintModal
         isOpen={isHintOpen}
         onClose={() => setIsHintOpen(false)}
-        caseData={currentCase}
+        caseData={caseWithMood}
         clues={currentClues}
         chatCount={totalChatInteractions}
       />
